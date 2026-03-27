@@ -6,6 +6,7 @@ from streamlit_folium import st_folium
 import sys
 sys.path.insert(0, "src")
 from detect import detect_outliers
+from alert_logger import log_alerts, get_log, clear_log
 
 st.set_page_config(page_title="ADAS Multi-Vehicle Dashboard", layout="wide")
 st.title("ADAS Multi-Vehicle Sensor Dashboard")
@@ -22,6 +23,12 @@ vehicles = {
     "Vehicle C — Aggressive": df_c,
 }
 
+vehicle_ids = {
+    "Vehicle A — Highway": "VH-001",
+    "Vehicle B — City": "VH-002",
+    "Vehicle C — Aggressive": "VH-003",
+}
+
 colors = {
     "Vehicle A — Highway": "steelblue",
     "Vehicle B — City": "green",
@@ -34,10 +41,9 @@ map_colors = {
     "Vehicle C — Aggressive": "orange",
 }
 
-# Top metrics for each vehicle
+# Top metrics
 st.markdown("### Fleet Overview")
 col1, col2, col3 = st.columns(3)
-
 for col, (name, df) in zip([col1, col2, col3], vehicles.items()):
     with col:
         st.markdown(f"**{name}**")
@@ -47,14 +53,20 @@ for col, (name, df) in zip([col1, col2, col3], vehicles.items()):
 
 st.markdown("---")
 
-# Channel selector and threshold
+# Controls
 channel = st.selectbox("Select sensor channel:", ["speed_mps", "accel_x", "accel_y", "accel_z", "steering_angle", "radar_distance_m"])
 threshold = st.slider("Anomaly detection threshold", 1.0, 3.0, 2.0, 0.1)
+
+# Log alerts button
+if st.button("Log Current Anomalies to Alert History"):
+    for name, df in vehicles.items():
+        outliers = detect_outliers(df, channel, threshold)
+        log_alerts(outliers, vehicle_ids[name], channel)
+    st.success("Alerts logged successfully!")
 
 # Side by side charts
 st.markdown("### Sensor Comparison")
 fig, axes = plt.subplots(1, 3, figsize=(18, 4))
-
 for ax, (name, df) in zip(axes, vehicles.items()):
     outliers = detect_outliers(df, channel, threshold)
     ax.plot(df["timestamp"], df[channel], color=colors[name], label=channel)
@@ -65,7 +77,6 @@ for ax, (name, df) in zip(axes, vehicles.items()):
     ax.set_xlabel("Time (s)")
     ax.set_ylabel(channel)
     ax.legend()
-
 plt.tight_layout()
 st.pyplot(fig)
 
@@ -74,7 +85,6 @@ st.markdown("---")
 # Anomaly summary
 st.markdown("### Anomaly Summary")
 col1, col2, col3 = st.columns(3)
-
 for col, (name, df) in zip([col1, col2, col3], vehicles.items()):
     outliers = detect_outliers(df, channel, threshold)
     with col:
@@ -85,10 +95,9 @@ for col, (name, df) in zip([col1, col2, col3], vehicles.items()):
 
 st.markdown("---")
 
-# GPS map with all three vehicles
+# GPS map
 st.markdown("### GPS Route Map — All Vehicles")
 st.markdown("🔵 Vehicle A (Highway) | 🟢 Vehicle B (City) | 🟠 Vehicle C (Aggressive) | 🔴 Anomalies")
-
 center_lat = df_a["latitude"].mean()
 center_lon = df_a["longitude"].mean()
 m = folium.Map(location=[center_lat, center_lon], zoom_start=15)
@@ -96,28 +105,40 @@ m = folium.Map(location=[center_lat, center_lon], zoom_start=15)
 for name, df in vehicles.items():
     outliers = detect_outliers(df, channel, threshold)
     color = map_colors[name]
-
     for _, row in df.iterrows():
         folium.CircleMarker(
             location=[row["latitude"], row["longitude"]],
-            radius=3,
-            color=color,
-            fill=True,
-            fill_opacity=0.6,
-            tooltip=name
+            radius=3, color=color, fill=True,
+            fill_opacity=0.6, tooltip=name
         ).add_to(m)
-
     for _, row in outliers.iterrows():
         folium.CircleMarker(
             location=[row["latitude"], row["longitude"]],
-            radius=8,
-            color="red",
-            fill=True,
+            radius=8, color="red", fill=True,
             fill_opacity=0.9,
             popup=f"{name} Anomaly! {channel}: {row[channel]:.2f}"
         ).add_to(m)
 
 st_folium(m, width=1400, height=500)
+
+st.markdown("---")
+
+# Alert history log
+st.markdown("### Alert History Log")
+col1, col2 = st.columns([4, 1])
+with col2:
+    if st.button("Clear Log"):
+        clear_log()
+        st.success("Log cleared!")
+
+log = get_log()
+if len(log) == 0:
+    st.info("No alerts logged yet. Click 'Log Current Anomalies' to save alerts.")
+else:
+    severity_colors = {"HIGH": "🔴", "MEDIUM": "🟠", "LOW": "🟡"}
+    log["severity"] = log["severity"].apply(lambda x: f"{severity_colors.get(x, '')} {x}")
+    st.dataframe(log, use_container_width=True)
+    st.caption(f"Total alerts logged: {len(log)}")
 
 st.markdown("---")
 st.markdown("### Raw Data")
