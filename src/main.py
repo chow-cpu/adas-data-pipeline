@@ -26,4 +26,4 @@ def run_pipeline(filepath):
     print("Pipeline complete. Check the output/ folder.")
 
 if __name__ == "__main__":
-    run_pipeline("data/sample_run.csv")
+    run_pipeline("data/simulated_sensor_log.csv")
