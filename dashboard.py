@@ -9,7 +9,8 @@ from detect import detect_outliers
 from alert_logger import log_alerts, get_log, clear_log
 from ml_detector import train_model, load_model, predict_anomalies, get_anomaly_rows
 from health_score import calculate_health_score
-
+from report_generator import generate_report
+import time
 st.set_page_config(page_title="ADAS Multi-Vehicle Dashboard", layout="wide")
 st.title("ADAS Multi-Vehicle Sensor Dashboard")
 st.markdown("Comparing 3 simultaneous vehicle simulations — C++ simulator + Python pipeline + ML")
@@ -195,6 +196,39 @@ st_folium(m, width=1400, height=500)
 
 st.markdown("---")
 
+# PDF Report Generator
+st.markdown("### Generate PDF Report")
+if st.button("Generate Full PDF Report"):
+    if model is not None:
+        with st.spinner("Generating report..."):
+            health_scores = {}
+            zscore_outliers_dict = {}
+            ml_outliers_dict = {}
+
+            for name, df in vehicles.items():
+                df_pred = predict_anomalies(df, model, scaler)
+                ml_out = get_anomaly_rows(df_pred)
+                z_out = detect_outliers(df, channel, threshold)
+                score, status, color = calculate_health_score(df, ml_out, z_out)
+                health_scores[name] = (score, status, color)
+                zscore_outliers_dict[name] = z_out
+                ml_outliers_dict[name] = ml_out
+
+            path = generate_report(
+                vehicles, vehicle_ids, health_scores,
+                zscore_outliers_dict, ml_outliers_dict, channel
+            )
+            with open(path, "rb") as f:
+                st.download_button(
+                    label="Download PDF Report",
+                    data=f,
+                    file_name="adas_report.pdf",
+                    mime="application/pdf"
+                )
+            st.success("Report generated successfully!")
+    else:
+        st.warning("Please train the ML model first!")
+
 # Alert log
 st.markdown("### Alert History Log")
 col1, col2 = st.columns([4, 1])
@@ -227,3 +261,116 @@ with tab2:
     st.dataframe(df_b)
 with tab3:
     st.dataframe(df_c)
+    st.markdown("---")
+
+# Simulation Replay Mode
+st.markdown("### Simulation Replay Mode")
+st.markdown("Watch sensor data build frame by frame — like a live vehicle test bench")
+
+replay_vehicle = st.selectbox(
+    "Select vehicle to replay:",
+    list(vehicles.keys()),
+    key="replay_vehicle"
+)
+
+replay_channel = st.selectbox(
+    "Select channel to replay:",
+    ["speed_mps", "accel_x", "accel_y", "accel_z", "steering_angle", "radar_distance_m"],
+    key="replay_channel"
+)
+
+replay_speed = st.select_slider(
+    "Replay speed:",
+    options=["0.25x", "0.5x", "1x", "2x", "4x"],
+    value="1x"
+)
+
+speed_map = {"0.25x": 0.4, "0.5x": 0.2, "1x": 0.1, "2x": 0.05, "4x": 0.025}
+delay = speed_map[replay_speed]
+
+col1, col2 = st.columns(2)
+play = col1.button("Play Replay")
+stop = col2.button("Stop")
+
+if play:
+    df_replay = vehicles[replay_vehicle].copy()
+    zscore_out = detect_outliers(df_replay, replay_channel, 2.0)
+    anomaly_timestamps = set(zscore_out["timestamp"].values)
+
+    chart_placeholder = st.empty()
+    map_placeholder = st.empty()
+    status_placeholder = st.empty()
+    frame_placeholder = st.empty()
+
+    for i in range(1, len(df_replay) + 1):
+        df_slice = df_replay.iloc[:i]
+        current_row = df_replay.iloc[i - 1]
+        is_anomaly = current_row["timestamp"] in anomaly_timestamps
+
+        # Update chart
+        fig, ax = plt.subplots(figsize=(12, 3))
+        ax.plot(df_slice["timestamp"], df_slice[replay_channel],
+                color="steelblue", linewidth=1.5)
+
+        anomaly_slice = df_slice[df_slice["timestamp"].isin(anomaly_timestamps)]
+        if len(anomaly_slice) > 0:
+            ax.scatter(anomaly_slice["timestamp"], anomaly_slice[replay_channel],
+                      color="red", zorder=5, s=50)
+
+        ax.set_xlim(df_replay["timestamp"].min(), df_replay["timestamp"].max())
+        ax.set_ylim(df_replay[replay_channel].min() * 0.9,
+                   df_replay[replay_channel].max() * 1.1)
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel(replay_channel)
+        ax.set_title(f"{replay_vehicle} — {replay_channel} replay")
+
+        if is_anomaly:
+            ax.axvline(x=current_row["timestamp"], color="red", 
+                      linestyle="--", alpha=0.7)
+            fig.patch.set_facecolor("#ffe6e6")
+
+        chart_placeholder.pyplot(fig)
+        plt.close()
+
+        # Update map
+        m_replay = folium.Map(
+            location=[current_row["latitude"], current_row["longitude"]],
+            zoom_start=16
+        )
+
+        # Draw route so far
+        for _, row in df_slice.iterrows():
+            folium.CircleMarker(
+                location=[row["latitude"], row["longitude"]],
+                radius=2,
+                color="steelblue",
+                fill=True,
+                fill_opacity=0.5
+            ).add_to(m_replay)
+
+        # Current position
+        folium.CircleMarker(
+            location=[current_row["latitude"], current_row["longitude"]],
+            radius=8,
+            color="red" if is_anomaly else "green",
+            fill=True,
+            fill_opacity=1.0,
+            popup="ANOMALY DETECTED!" if is_anomaly else "Normal"
+        ).add_to(m_replay)
+
+        if i % 10 == 0 or is_anomaly:
+            map_placeholder.empty()
+            with map_placeholder:
+                st_folium(m_replay, width=1200, height=300, key=f"map_{i}")
+
+        # Status
+        frame_placeholder.caption(f"Frame {i}/{len(df_replay)} — Time: {current_row['timestamp']:.1f}s")
+
+        if is_anomaly:
+            status_placeholder.error(f"ANOMALY DETECTED at {current_row['timestamp']:.1f}s — {replay_channel}: {current_row[replay_channel]:.4f}")
+        else:
+            status_placeholder.success(f"Normal — {replay_channel}: {current_row[replay_channel]:.4f}")
+
+        time.sleep(delay)
+
+    st.success("Replay complete!")
