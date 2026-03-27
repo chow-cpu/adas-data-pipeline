@@ -8,6 +8,7 @@ sys.path.insert(0, "src")
 from detect import detect_outliers
 from alert_logger import log_alerts, get_log, clear_log
 from ml_detector import train_model, load_model, predict_anomalies, get_anomaly_rows
+from health_score import calculate_health_score
 
 st.set_page_config(page_title="ADAS Multi-Vehicle Dashboard", layout="wide")
 st.title("ADAS Multi-Vehicle Sensor Dashboard")
@@ -45,6 +46,8 @@ map_colors = {
 # Top metrics
 st.markdown("### Fleet Overview")
 col1, col2, col3 = st.columns(3)
+model, scaler = load_model()
+
 for col, (name, df) in zip([col1, col2, col3], vehicles.items()):
     with col:
         st.markdown(f"**{name}**")
@@ -52,6 +55,19 @@ for col, (name, df) in zip([col1, col2, col3], vehicles.items()):
         st.metric("Max Speed (m/s)", f"{df['speed_mps'].max():.2f}")
         st.metric("Avg Radar (m)", f"{df['radar_distance_m'].mean():.2f}")
 
+        if model is not None:
+            df_pred = predict_anomalies(df, model, scaler)
+            ml_outliers = get_anomaly_rows(df_pred)
+            zscore_outliers = detect_outliers(df, "speed_mps", 2.0)
+            score, status, color = calculate_health_score(df, ml_outliers, zscore_outliers)
+
+            st.markdown(f"**Health Score**")
+            if color == "green":
+                st.success(f"✅ {score}/100 — {status}")
+            elif color == "orange":
+                st.warning(f"⚠️ {score}/100 — {status}")
+            else:
+                st.error(f"🔴 {score}/100 — {status}")
 st.markdown("---")
 
 # Controls
